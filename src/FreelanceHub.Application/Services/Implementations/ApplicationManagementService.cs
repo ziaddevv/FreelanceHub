@@ -6,7 +6,6 @@ using FreelanceHub.Domain.Enums;
 using FreelanceHub.Domain.Models;
 using FreelanceHub.Infrastructure.DataBase;
 using FreelanceHub.Infrastructure.Repositories.Abstractions;
-using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using ApplicationEntity = FreelanceHub.Domain.Models.Application;
 
@@ -26,6 +25,7 @@ namespace FreelanceHub.Application.Services.Implementations
         private readonly IApplicationRepository _applicationRepository;
         private readonly IAttachmentRepository _attachmentRepository;
         private readonly IFileUploadService _fileUploadService;
+        private readonly INotificationService _notificationService;
         private readonly IUnitOfWork _unitOfWork;
         private readonly ApplicationDbContext _dbContext;
 
@@ -33,12 +33,14 @@ namespace FreelanceHub.Application.Services.Implementations
             IApplicationRepository applicationRepository,
             IAttachmentRepository attachmentRepository,
             IFileUploadService fileUploadService,
+            INotificationService notificationService,
             IUnitOfWork unitOfWork,
             ApplicationDbContext dbContext)
         {
             _applicationRepository = applicationRepository;
             _attachmentRepository = attachmentRepository;
             _fileUploadService = fileUploadService;
+            _notificationService = notificationService;
             _unitOfWork = unitOfWork;
             _dbContext = dbContext;
         }
@@ -80,7 +82,6 @@ namespace FreelanceHub.Application.Services.Implementations
 
             try
             {
-               
                 await _applicationRepository.AddAsync(application, cancellationToken);
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
 
@@ -140,11 +141,13 @@ namespace FreelanceHub.Application.Services.Implementations
                 return ApplicationActionResult.Failed("Unable to process your application at this moment. Please try again.");
             }
         }
+
         public Task<Job?> GetOpenJobByIdAsync(int jobId, CancellationToken cancellationToken = default)
         {
             // Uses the repository method that already checks if job is Open and not deleted
             return _applicationRepository.GetOpenJobByIdAsync(jobId, cancellationToken);
         }
+
         public async Task<FreelancerApplicationDashboardResult> GetFreelancerDashboardAsync(int freelancerUserId, CancellationToken cancellationToken = default)
         {
             var applications = await _applicationRepository.ListByFreelancerUserIdAsync(freelancerUserId, cancellationToken);
@@ -190,6 +193,7 @@ namespace FreelanceHub.Application.Services.Implementations
                 }).ToArray()
             };
         }
+
         public async Task<List<FreelanceHub.Domain.Models.Application>> GetApplicationsForJobAsync(int jobId, int clientUserId, CancellationToken cancellationToken = default)
         {
             var job = await _dbContext.Jobs
@@ -233,20 +237,30 @@ namespace FreelanceHub.Application.Services.Implementations
                 return ApplicationActionResult.Failed("Finalized applications cannot be changed.");
             }
 
+            // Check if an application has already been accepted for this job
+            if (request.ApplicationStatus == ApplicationStatus.Accepted)
+            {
+                var hasAlreadyAccepted = await _dbContext.Applications
+                    .AnyAsync(a => a.JobId == application.JobId && a.ApplicationStatus == ApplicationStatus.Accepted, cancellationToken);
+
+                if (hasAlreadyAccepted)
+                {
+                    return ApplicationActionResult.Failed("An application for this job has already been accepted.");
+                }
+            }
+
             // Update Application Status
             application.ApplicationStatus = request.ApplicationStatus;
 
             await _unitOfWork.BeginTransactionAsync(cancellationToken);
             try
             {
-                // If status is Accepted, create the Contract record
+                // If status is Accepted, update job and create the Contract record
                 if (request.ApplicationStatus == ApplicationStatus.Accepted)
                 {
-
-                    // Close the Job
                     if (application.Job != null)
                     {
-                        application.Job.JobStatus = JobStatus.InProgress; 
+                        application.Job.JobStatus = JobStatus.InProgress;
                         application.Job.UpdatedAt = DateTime.UtcNow;
                     }
 
@@ -263,9 +277,6 @@ namespace FreelanceHub.Application.Services.Implementations
                     };
 
                     await _dbContext.Contracts.AddAsync(contract, cancellationToken);
-					application.Job.JobStatus = JobStatus.InProgress;
-					application.Job.UpdatedAt = DateTime.UtcNow;
-                   
                 }
 
                 await _unitOfWork.SaveChangesAsync(cancellationToken);
@@ -274,12 +285,25 @@ namespace FreelanceHub.Application.Services.Implementations
             catch (DbUpdateException)
             {
                 await _unitOfWork.RollbackTransactionAsync(cancellationToken);
-                return ApplicationActionResult.Failed("Unable to update application status and create contract right now. Please try again.");
+                return ApplicationActionResult.Failed("Unable to update application status right now. Please try again.");
+            }
+
+            // Send notification AFTER database transaction has committed successfully
+            if (request.ApplicationStatus is ApplicationStatus.Accepted or ApplicationStatus.Rejected)
+            {
+                    await _notificationService.SendApplicationStatusNotificationAsync(
+                        freelancerUserId: application.FreelancerUserId,
+                        clientUserId: request.ClientUserId,
+                        applicationId: application.ApplicationId,
+                        jobTitle: application.Job?.Title ?? "Job",
+                        newStatus: request.ApplicationStatus,
+                        cancellationToken: cancellationToken
+                    );   
+             
             }
 
             return ApplicationActionResult.Success(application.JobId);
         }
-
         private static List<string> ValidateSubmitRequest(SubmitApplicationRequest request)
         {
             var errors = new List<string>();

@@ -1,16 +1,32 @@
-﻿<!DOCTYPE html>
-<html lang="en">
+﻿@using System.Security.Claims
+@using FreelanceHub.Infrastructure.Repositories.Abstractions
+@inject INotificationRepository NotificationRepo
 
+@{
+    var userIdString = User.FindFirstValue(ClaimTypes.NameIdentifier);
+    int.TryParse(userIdString, out int currentUserId);
+
+    // Direct DB fetch for initial unread notifications without controller intervention
+    var unreadNotifications = User.Identity?.IsAuthenticated == true && currentUserId > 0
+        ? await NotificationRepo.GetUnreadByUserIdAsync(currentUserId)
+        : new List<FreelanceHub.Domain.Models.Notification>();
+
+    var unreadCount = unreadNotifications.Count;
+}
+
+<!DOCTYPE html>
+<html lang="en">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>@ViewData["Title"] - FreelanceHub</title>
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    <!-- Added Bootstrap Icons for bell icon -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
     <link rel="stylesheet" href="~/FreelanceHub.styles.css" asp-append-version="true" />
     @await RenderSectionAsync("Styles", required: false)
 </head>
-
 <body>
     <header>
         <nav class="navbar navbar-expand-sm navbar-toggleable-sm navbar-light bg-white border-bottom box-shadow mb-3">
@@ -26,19 +42,18 @@
                             <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Index">Home</a>
                         </li>
                         <li class="nav-item">
-                            <a class="nav-link text-dark" asp-area="" asp-controller="Home"
-                               asp-action="Privacy">Privacy</a>
+                            <a class="nav-link text-dark" asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
                         </li>
                         @if (User.IsInRole("Freelancer"))
                         {
                             <li class="nav-item">
-                            <a class="nav-link text-dark" asp-controller="Job" asp-action="Browse">Jobs</a></li>
-                            <li><a class="nav-link text-dark" asp-controller="Applications" asp-action="MyApplications">My
-                                Applications</a>
+                                <a class="nav-link text-dark" asp-controller="Job" asp-action="Browse">Jobs</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-controller="Contract"
-                                asp-action="Index">Contracts</a>
+                                <a class="nav-link text-dark" asp-controller="Applications" asp-action="MyApplications">My Applications</a>
+                            </li>
+                            <li class="nav-item">
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Contract" asp-action="Index">Contracts</a>
                             </li>
                         }
                         @if (User.IsInRole("Client"))
@@ -47,8 +62,7 @@
                                 <a class="nav-link text-dark" asp-controller="Job" asp-action="MyJobs">My Jobs</a>
                             </li>
                             <li class="nav-item">
-                                <a class="nav-link text-dark" asp-area="" asp-controller="Contract"
-                                asp-action="Index">Contracts</a>
+                                <a class="nav-link text-dark" asp-area="" asp-controller="Contract" asp-action="Index">Contracts</a>
                             </li>
                         }
                         @if (User.IsInRole("Admin"))
@@ -67,11 +81,44 @@
                                 <a class="nav-link text-dark" asp-controller="Chat" asp-action="Inbox">Messages</a>
                             </li>
                         }
-
                     </ul>
-                    <ul class="navbar-nav">
+
+                    <ul class="navbar-nav align-items-center">
                         @if (User.Identity?.IsAuthenticated == true)
                         {
+                            <!-- NOTIFICATION DROPDOWN START -->
+                            <li class="nav-item dropdown me-2">
+                                <a class="nav-link text-dark position-relative" href="#" id="notificationDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                                    <i class="bi bi-bell fs-5"></i>
+                                    <span id="notificationBadge" class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-danger @(unreadCount == 0 ? "d-none" : "")">
+                                        @unreadCount
+                                    </span>
+                                </a>
+                                <div class="dropdown-menu dropdown-menu-end shadow p-0" aria-labelledby="notificationDropdown" style="width: 320px; max-height: 400px; overflow-y: auto;">
+                                    <div class="p-2 border-bottom fw-bold d-flex justify-content-between align-items-center">
+                                        <span>Notifications</span>
+                                    </div>
+                                    <div id="notificationList" class="list-group list-group-flush">
+                                        @if (unreadCount == 0)
+                                        {
+                                            <div id="noNotificationsMsg" class="p-3 text-center text-muted small">No new notifications</div>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var notif in unreadNotifications)
+                                            {
+                                                <a href="@(string.IsNullOrEmpty(notif.TargetUrl) ? "#" : notif.TargetUrl)" class="list-group-item list-group-item-action p-2">
+                                                    <div class="fw-bold small">@notif.Title</div>
+                                                    <div class="text-muted small">@notif.Message</div>
+                                                    <div class="text-end text-muted" style="font-size: 0.75rem;">@notif.CreatedAt.ToLocalTime().ToString("g")</div>
+                                                </a>
+                                            }
+                                        }
+                                    </div>
+                                </div>
+                            </li>
+                            <!-- NOTIFICATION DROPDOWN END -->
+
                             <li class="nav-item">
                                 <a class="nav-link text-dark" asp-controller="Profile" asp-action="Index">Profile</a>
                             </li>
@@ -98,6 +145,7 @@
             </div>
         </nav>
     </header>
+
     <div class="@(ViewData["MainContainerClass"] as string ?? "container")">
         <main role="main" class="pb-3">
             @RenderBody()
@@ -109,10 +157,59 @@
             &copy; 2026 - FreelanceHub - <a asp-area="" asp-controller="Home" asp-action="Privacy">Privacy</a>
         </div>
     </footer>
+
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="~/js/site.js" asp-append-version="true"></script>
+
+    @if (User.Identity?.IsAuthenticated == true)
+    {
+        <!-- SignalR Client Script -->
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/microsoft-signalr/7.0.5/signalr.min.js"></script>
+        <script>
+                const currentUserId = "@currentUserId";
+
+                const notificationConnection = new signalR.HubConnectionBuilder()
+                    .withUrl("/hubs/notification")
+                    .withAutomaticReconnect()
+                    .build();
+
+                notificationConnection.on("ReceiveNotification", function(data) {
+                    // Update Badge Count
+                    const badge = document.getElementById("notificationBadge");
+                    let count = parseInt(badge.innerText) || 0;
+                    count++;
+                    badge.innerText = count;
+                    badge.classList.remove("d-none");
+
+                    // Remove "No notifications" placeholder if present
+                    const noMsg = document.getElementById("noNotificationsMsg");
+                    if (noMsg) {
+                        noMsg.remove();
+                    }
+
+                    // Append new notification item to top of list
+                    const list = document.getElementById("notificationList");
+                    const newItem = document.createElement("a");
+                    newItem.href = data.targetUrl || "#";
+                    newItem.className = "list-group-item list-group-item-action p-2 bg-light";
+                    newItem.innerHTML = `
+                                    <div class="fw-bold small">${data.title}</div>
+                                    <div class="text-muted small">${data.message}</div>
+                                    <div class="text-end text-muted" style="font-size: 0.75rem;">Just now</div>
+                                `;
+                    list.insertBefore(newItem, list.firstChild);
+                });
+
+                notificationConnection.start().then(function() {
+                    if (currentUserId > 0) {
+                        // Joins the SignalR user group matching SignalRNotificationRealtimeService
+                        notificationConnection.invoke("JoinUserGroup", currentUserId).catch(err => console.error(err));
+                    }
+                }).catch(err => console.error("SignalR Connection Error: ", err));
+        </script>
+    }
+
     @await RenderSectionAsync("Scripts", required: false)
 </body>
-
 </html>
